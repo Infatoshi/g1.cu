@@ -1,0 +1,9 @@
+build/
+*.o
+*.ptx
+*.cubin
+*.nsys-rep
+*.ncu-rep
+__pycache__/
+.venv/
+*.pyc
