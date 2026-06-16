@@ -1,8 +1,6 @@
 # CLAUDE.md — g1.cu
 
-Home: gamer-primary — canonical at `gamer:/home/infatoshi/dev/cuda/g1.cu`. Run all
-dev/compute there via `ssh gamer`. No Mac/anvil copy. CUDA project for the RTX 3090
-(sm_86, Ampere), CUDA 13.3. Edit on gamer directly.
+CUDA project for the RTX 3090 (sm_86, Ampere), CUDA 13.x.
 
 Named for the Unitree G1 humanoid (the intended reference body).
 
