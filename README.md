@@ -1,5 +1,7 @@
 # g1.cu
 
+![g1.cu: a Unitree G1 trained from scratch to walk across a 5 m finish line, on one RTX 3090](demo/g1_finish_demo.gif)
+
 A hyperspecialized, fully-fused GPU simulator and on-GPU reinforcement-learning loop for the
 Unitree G1 humanoid, running on a single consumer GPU (RTX 3090, sm_86, CUDA 13.x).
 
