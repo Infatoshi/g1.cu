@@ -123,18 +123,19 @@ __device__ void env_qacc(const float* qp, const float* qv,
                                   case 2:dkv=v0+v2; break; default:dkv=v0-v2; }
             aref[idx]=-bcoef*dkv - kip; }
     }
-    // PASS 2: M^-1 basis back-solves, BATCHED 2 contacts per factor traversal (K=6) to amortize
-    // the local-memory factor-read traffic (the contact-solve hot spot). Mm lays contacts c,c+1
-    // contiguously (6*NV) and the multi-solve's column-major out[col*NV+d] matches Mm exactly, so
-    // one K=6 solve fills both. Odd last contact pads cols 3-5 with zeros (M^-1 0 = 0, harmless).
-    { float basis[6*G1_NV]; float msolvescr[ABA_SOLVEM_MULTI_SCR(6)];
-      for (int c=0;c<ncon;c+=2){
-        for(int i=0;i<6*NV;++i) basis[i]=0.f;
-        int ng = (c+1<ncon)?2:1;
-        for(int g=0;g<ng;++g){ int cc=c+g; const int* dc=&cdof[cc*CDS]; int nc=cnd[cc]; const float* eb=&Eb[cc*EBS];
-            for(int aa=0;aa<3;++aa){ const float* er=&eb[aa*CDS]; int col=g*3+aa;
-                for(int k=0;k<nc;++k) basis[col*NV + dc[k]]=er[k]; } }
-        aba_solveM_multi<6>(&fac, S, basis, msolvescr, &Mm[c*3*NV]);
+    // PASS 2: M^-1 basis back-solves, ONE contact per factor traversal (K=3). Each contact's 3
+    // basis columns are solved in a single multi-solve; Mm strides by 3*NV per contact and the
+    // multi-solve's column-major out[col*NV+d] matches Mm exactly. (Was K=6/2-contacts to amortize
+    // factor-read traffic, but the K=6 msolvescr -- NBODY*6*K*2 = 8.9KB -- was the single largest
+    // local-frame array; K=3 halves it to ~4.5KB to cut the DRAM-backed local traffic that is the
+    // contact-solve bottleneck on sm_120. Math is identical: per-contact M^-1 is independent.)
+    { float basis[3*G1_NV]; float msolvescr[ABA_SOLVEM_MULTI_SCR(3)];
+      for (int c=0;c<ncon;++c){
+        for(int i=0;i<3*NV;++i) basis[i]=0.f;
+        const int* dc=&cdof[c*CDS]; int nc=cnd[c]; const float* eb=&Eb[c*EBS];
+        for(int aa=0;aa<3;++aa){ const float* er=&eb[aa*CDS];
+            for(int k=0;k<nc;++k) basis[aa*NV + dc[k]]=er[k]; }
+        aba_solveM_multi<3>(&fac, S, basis, msolvescr, &Mm[c*3*NV]);
       } }
 
     // d_k coefficient vectors in basis [e0,e1,e2]: d0=(1,1,0) d1=(1,-1,0) d2=(1,0,1) d3=(1,0,-1).
