@@ -8,3 +8,7 @@ __pycache__/
 .venv/
 *.pyc
 .pytest_cache/
+# training/render intermediates (the curated demo + ckpt are committed explicitly)
+models/ppo_ckpt/best.pt
+models/ppo_ckpt/last.pt
+bench/finish_traj.npy

@@ -38,6 +38,28 @@ MuJoCo-validated specialized kernel and the measured, no-hype engineering — no
 plane); MJX simulates the full self-collision set. The ~10× is honest only for the
 locomotion-relevant contact set, not identical physics.
 
+## vs nanoG1 (same GPU)
+
+[nanoG1](https://github.com/kingjulio8238/nanoG1) is a contemporaneous from-scratch G1 walker on a
+specialized GPU MuJoCo engine. Measured on the same hardware:
+
+- **Sim throughput (RTX PRO 6000, Blackwell sm_120):** g1.cu **1.53e7** vs nanoG1 **9.75e6**
+  physics-steps/s = **~1.57×**, after a +24% Blackwell frame-reduction pass (one-thread-per-world
+  is local-memory-bandwidth bound; cutting the per-thread frame converts ~1:1 to throughput — full
+  campaign with every dead end in [`DEVLOG.md`](DEVLOG.md), 2026-06-18).
+- **Training (RTX 3090, from scratch):** both train a G1 to locomote in single-digit minutes.
+  The tasks differ — nanoG1 does omnidirectional velocity-command tracking; g1.cu walks across a
+  5 m finish line and must stay upright the whole way — so the curves are stacked, not overlaid:
+
+![training comparison: nanoG1 vs g1.cu](demo/train_compare.png)
+
+Honest split: g1.cu has the faster **simulator**, but nanoG1 reaches its goal in less wall-clock
+**training** time (~2.5 min to its walk gate vs ~4.5 min to our finish line) — its edge is
+sample efficiency (symmetry loss, V-trace, a tuned PufferLib trainer), not sim speed.
+
+A demo of the trained g1.cu walker crossing the line:
+[`demo/g1_finish_demo.mp4`](demo/g1_finish_demo.mp4).
+
 ## Validation
 
 The physics is checked bit-for-bit against MuJoCo:
@@ -61,11 +83,13 @@ just build                                       # validated single-world dynami
 just env                                         # batched RL env shared lib (build/libg1env.so)
 uv run python scripts/ppo_fused.py 1500 8192     # fully-on-GPU PPO training
 uv run python scripts/play_finish.py             # roll the trained policy across the line
-uv run python scripts/render_finish.py           # render the demo to bench/finish.mp4
+uv run python scripts/render_finish.py demo/g1_finish_demo.mp4   # render the demo video
+uv run python scripts/plot_compare.py            # regenerate the vs-nanoG1 figure
 ```
 
-A pretrained finish-line walker is included at `models/ppo_ckpt/finish_best.pt`, and a demo
-render at `bench/finish_qt.mp4`.
+A pretrained finish-line walker is included at `models/ppo_ckpt/finish_best.pt`, with the demo
+render at [`demo/g1_finish_demo.mp4`](demo/g1_finish_demo.mp4) and the comparison figure at
+[`demo/train_compare.png`](demo/train_compare.png).
 
 ## Layout
 
@@ -81,9 +105,11 @@ render at `bench/finish_qt.mp4`.
 
 ## Hardware notes
 
-Targets sm_86 (Ampere, RTX 3090). The kernel is local-memory-bandwidth bound at a 255-register /
-16.7%-occupancy ceiling — a genuine local optimum for the one-thread-per-world mapping (full ncu
-analysis and the dead ends are in `DEVLOG.md`).
+Targets sm_86 (Ampere, RTX 3090); also profiled and tuned on sm_120 (Blackwell, RTX PRO 6000),
+where a frame-reduction pass added +24% sim throughput (DEVLOG, 2026-06-18). On both, the kernel is
+local-memory-bandwidth bound — a genuine local optimum for the one-thread-per-world mapping; the
+full ncu analysis and every measured dead end (warp-coop, fp16, L2-persistence, …) are in
+`DEVLOG.md`.
 
 ## License & attribution
 
