@@ -485,3 +485,68 @@ where rollout is +14%; the N=16384 loss is outside the trained regime. pytest 7/
 CUMULATIVE rollout this session: host-loop 1080ms -> 528ms = 2.05x (megakernel + RNE + contact
 sparsity/symmetry/3-basis + multi-RHS K=3 + J-elim + K=6 batch). Added diagnostics: src/deviceq.cu,
 extern-C g1_occupancy_report. Frame growth (31KB) is the new ceiling concern for the persistent kernel.
+
+## 2026-06-18 -- Blackwell (sm_120, RTX PRO 6000) physics-throughput campaign (+24%, frame-bound)
+Goal: push the sim on the PRO 6000 at the nanoG1-matched config (peak physics-steps/s over N=4096..32768).
+All measured on anvil, gated vs the MuJoCo oracle (test_envqacc, relerr <= 1e-5).
+
+DIAGNOSIS (ncu on the real k_phys_bench): LOCAL-MEMORY-BANDWIDTH bound, NOT compute. At the N=16384
+baseline peak: DRAM 44% SoL, L2 29%, L1 17%, compute 6%, warps_active 5.5%. Local traffic dominates
+global ~1000:1 (439M vs 410K sectors). The ~28KB/thread local frame is the kernel. Signature: N=32768
+is SLOWER than N=16384 (L2/capacity cliff -- adding worlds thrashes the cache before saturating
+bandwidth). KEY MODEL: frame cuts convert ~1:1 (often super-linearly, via the cliff) to throughput and
+shift the peak to higher N; occupancy is N-limited at the peak (~1.4 blocks/SM), so the per-thread
+FOOTPRINT, not register occupancy, is the lever.
+
+WHAT WORKED (all gate-passing, KEPT, cumulative +24% over the 06-13 K=3 baseline = 1.231e7 -> ~1.53e7
+substeps/s stable @ N=20480, ~1.57x nanoG1's 9.75M on the same GPU):
+- msolvescr K=3 -> K=1 (one basis column per factor traversal): +12%. Smaller PASS2 scratch (4464->1488B).
+  3x factor re-reads are free (compute idle). relerr 5.5e-6.
+- CDS 16 -> 12 (true max ancestor-dof count; foot spheres only on bodies 7/13, chain = 6 leg + 6 base
+  = exactly 12): +12% more, peak shifted 16384 -> 20480. Shrinks cdof + Eb.
+- cdof/cnd int -> uint8 (dof indices <=34, counts <=12): +2%, bit-identical. Same access pattern.
+
+WHAT FAILED (TRIED, MEASURED, REVERTED -- the negative results matter):
+- G-block A reconstruction (store 3x3 Gram, rebuild dense A on the fly in PGS): NEUTRAL (+1%, noise).
+  A's 4KB array shrank but the heavier PGS inner loop spilled ~5KB MORE (7824->13276 spill stores),
+  eating the saving. LESSON: cuts that add hot-loop compute get refunded as spills. (A is NOT the
+  binding frame array.)
+- Mm elimination (compute M^-1 basis on the fly per contact via symmetry G=Mm_c.e_cp; dq via one
+  M^-1 solve of J^T f): frame dropped the MOST (-2480B to 23424B) but throughput -21%. The merged
+  loop keeps Mm_c+msolvescr+A churning together and wrecks access locality. LESSON: a clean
+  separate-pass structure (PASS2 writes Mm, PASS3 reads it) beats a smaller-frame fused loop;
+  locality, not just footprint, decides it.
+- fp16 storage of Mm (the M^-1 contact basis): FAILS the gate at relerr 6.3e-3 (budget 1e-5). The
+  contact correction dq = M^-1 J^T f is far too precision-sensitive for fp16 (unlike the smooth ABA
+  path, where fp16 storage was a win). Mm stays fp32.
+- L1 carveout = max-L1: no-op (driver already gives max L1 at 0 shared mem).
+- -maxrregcount / occupancy: no help (N limits occupancy at the peak; more resident frames thrash L2).
+- BLOCK size 32/64/128: 64 (default) is best; register-bound so all give 256 threads/SM anyway.
+
+STRUCTURAL LEVERS RULED OUT for this per-thread-local-frame-bound SIMT kernel (independent analysis
++ this codebase's prior measurements): warp specialization (no cross-thread data / overlapping roles;
+warp-coop already -48..-73%), TMA (no global tensors to stage; traffic is thread-private local),
+distributed-shared-memory / clusters (uses ~0 SMEM, no cross-world sharing), tensor cores (per-thread
+6x6/3x3 solves, not collective MMA; the NN is 2% of step), cp.async (overlaps global->shared, not
+local spill reloads). The megakernel/fusion thesis was already retired (NN ~2% of step).
+
+CEILING: re-profiled at the optimized N=20480 -- now L2 49.7% SoL (binding), DRAM 45.8%, compute 11%,
+warps_active 7%. Frame cuts moved us DRAM-bound -> L2-bound. We're latency/concurrency-limited (only
+7% warps active) but can't add worlds without the L2 cliff; smaller frame is the only axis and the
+safe footprint cuts are exhausted (structural cuts hurt locality, precision cuts fail the gate). The
+last Blackwell lever -- L2 persistence (cudaAccessPolicyWindow + cudaLimitPersistingL2CacheSize) over a
+world-indexed SoA GLOBAL scratch for Mm (toggle -DMM_GLOBAL) -- was IMPLEMENTED and MEASURED: -49%
+(1.49e7 -> 7.48e6), a decisive LOSS, even though it cut the local frame to 22544B. Moving the per-thread
+M^-1 basis to global scratch makes every Mm access a global transaction; even L2-persistence-pinned,
+that's far slower than local memory's hardware-interleaved L1/L2 caching. DEFINITIVE: explicit L2
+residency does NOT beat implicit local caching here. Plumbing reverted (this log keeps the result).
+CONCLUSION: kernel is at its numerically-gated ceiling; further gains need relaxing the 1e-5 gate (lower
+physics fidelity) or a different algorithm/mapping (warp-coop already proven worse). Net campaign: +24%.
+
+Also CHECKED (adversarial 2nd-opinion proposed shrinking A by capping MAX_CONTACT, claiming "typical
+ncon=2-4, A mostly cold"): MEASURED the ncon histogram (NCON_PROBE atomic, instrumentation reverted) over
+the stand-pose bench -- ncon is 6/7/8 in 93% of contact-solve calls (8: 28%, 7: 38%, 6: 27%; max 8). The
+standing/walking robot plants nearly all 8 foot spheres, so nefc is routinely 24-32 and A[32x32]=4KB (not
+16KB; the suggestion mis-sized it 4x) is genuinely near-full. MAX_CONTACT=8 is a HARD physical bound (8
+foot spheres), unlike CDS which was a conservative kinematic bound -- capping it would corrupt/drop
+contacts in the majority of states. A cannot shrink. Confirms the floor empirically.

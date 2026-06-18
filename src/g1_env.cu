@@ -391,7 +391,19 @@ void g1_env_bench_phys(void* h, int K){
 int g1_env_obs_dim(){ return OBS_DIM; }
 int g1_env_act_dim(){ return ACT_DIM; }
 
+// One-time: prefer maximum L1 over shared memory for the physics kernels. The 1-thread=1-world
+// SIMT kernels use ~0 shared memory but a large (~28KB/thread) DRAM-backed LOCAL frame; local
+// loads/stores cache through L1, so biasing the unified L1/SMEM split fully toward L1 cuts the
+// local-memory DRAM traffic that is the contact-solve bottleneck on sm_120. Carveout=0 == max L1.
+static void g1_set_cache_prefs(){
+    static bool done=false; if(done) return; done=true;
+    cudaFuncSetAttribute((const void*)k_phys_bench, cudaFuncAttributePreferredSharedMemoryCarveout, 0);
+    cudaFuncSetAttribute((const void*)k_rollout,    cudaFuncAttributePreferredSharedMemoryCarveout, 0);
+    cudaFuncSetAttribute((const void*)k_step,       cudaFuncAttributePreferredSharedMemoryCarveout, 0);
+}
+
 void* g1_env_create(int N, int substeps, int pgs_iters, unsigned long seed){
+    g1_set_cache_prefs();
     EnvState* E=new EnvState();
     E->N=N; E->S=substeps; E->pgs=pgs_iters;
     CK(cudaMalloc(&E->qp,(size_t)N*G1_NQ*4));
